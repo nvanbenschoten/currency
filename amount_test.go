@@ -514,15 +514,15 @@ func TestAmount_MarshalJSON(t *testing.T) {
 }
 
 func TestAmount_UnmarshalJSON(t *testing.T) {
-	d := []byte(`{"number":"INVALID","currency":"USD"}`)
+	d := []byte(`{"number":"3,45","currency":"USD"}`)
 	unmarshalled := &currency.Amount{}
 	err := json.Unmarshal(d, unmarshalled)
 	if e, ok := err.(currency.InvalidNumberError); ok {
 		if e.Op != "Amount.UnmarshalJSON" {
 			t.Errorf("got %v, want Amount.UnmarshalJSON", e.Op)
 		}
-		if e.Number != "INVALID" {
-			t.Errorf("got %v, want INVALID", e.Number)
+		if e.Number != "3,45" {
+			t.Errorf("got %v, want 3,45", e.Number)
 		}
 	} else {
 		t.Errorf("got %T, want currency.InvalidNumberError", err)

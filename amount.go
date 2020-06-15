@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/cockroachdb/apd/v2"
+	"github.com/ericlagergren/decimal"
 )
 
 // RoundingMode determines how the amount will be rounded.
@@ -58,14 +58,14 @@ func (e MismatchError) Error() string {
 
 // Amount stores a decimal number with its currency code.
 type Amount struct {
-	number       *apd.Decimal
+	number       *decimal.Big
 	currencyCode string
 }
 
 // NewAmount creates a new Amount from a numeric string and a currency code.
 func NewAmount(n, currencyCode string) (Amount, error) {
-	number, _, err := apd.NewFromString(n)
-	if err != nil {
+	number, ok := new(decimal.Big).SetString(n)
+	if !ok || number.IsNaN(0) {
 		return Amount{}, InvalidNumberError{"NewAmount", n}
 	}
 	if !IsValid(currencyCode) {
@@ -98,7 +98,9 @@ func (a Amount) ToMinorUnits() int64 {
 	if a.number == nil {
 		return 0
 	}
-	return a.Round().number.Coeff.Int64()
+	result, _ := a.Round().number.SetScale(0).Int64()
+
+	return result
 }
 
 // Convert converts a to a different currency.
@@ -106,12 +108,11 @@ func (a Amount) Convert(currencyCode, rate string) (Amount, error) {
 	if !IsValid(currencyCode) {
 		return Amount{}, InvalidCurrencyCodeError{"Amount.Convert", currencyCode}
 	}
-	result, _, err := apd.NewFromString(rate)
-	if err != nil {
+	result, ok := new(decimal.Big).SetString(rate)
+	if !ok || result.IsNaN(0) {
 		return Amount{}, InvalidNumberError{"Amount.Convert", rate}
 	}
-	ctx := apd.BaseContext.WithPrecision(16)
-	ctx.Mul(result, a.number, result)
+	result.Mul(a.number, result)
 
 	return Amount{result, currencyCode}, nil
 }
@@ -121,9 +122,8 @@ func (a Amount) Add(b Amount) (Amount, error) {
 	if a.currencyCode != b.currencyCode {
 		return Amount{}, MismatchError{"Amount.Add", a, b}
 	}
-	result := apd.New(0, 0)
-	ctx := apd.BaseContext.WithPrecision(16)
-	ctx.Add(result, a.number, b.number)
+	result := new(decimal.Big)
+	result.Add(a.number, b.number)
 
 	return Amount{result, a.currencyCode}, nil
 }
@@ -133,35 +133,32 @@ func (a Amount) Sub(b Amount) (Amount, error) {
 	if a.currencyCode != b.currencyCode {
 		return Amount{}, MismatchError{"Amount.Sub", a, b}
 	}
-	result := apd.New(0, 0)
-	ctx := apd.BaseContext.WithPrecision(16)
-	ctx.Sub(result, a.number, b.number)
+	result := new(decimal.Big)
+	result.Sub(a.number, b.number)
 
 	return Amount{result, a.currencyCode}, nil
 }
 
 // Mul multiplies a by n and returns the result.
 func (a Amount) Mul(n string) (Amount, error) {
-	result, _, err := apd.NewFromString(n)
-	if err != nil {
+	result, ok := new(decimal.Big).SetString(n)
+	if !ok || result.IsNaN(0) {
 		return Amount{}, InvalidNumberError{"Amount.Mul", n}
 	}
-	ctx := apd.BaseContext.WithPrecision(16)
-	ctx.Mul(result, a.number, result)
+	result.Mul(a.number, result)
 
-	return Amount{result, a.currencyCode}, err
+	return Amount{result, a.currencyCode}, nil
 }
 
 // Div divides a by n and returns the result.
 func (a Amount) Div(n string) (Amount, error) {
-	result, _, err := apd.NewFromString(n)
-	if err != nil || result.IsZero() {
+	result, ok := new(decimal.Big).SetString(n)
+	if !ok || result.IsNaN(0) || result.Sign() == 0 {
 		return Amount{}, InvalidNumberError{"Amount.Div", n}
 	}
-	ctx := apd.BaseContext.WithPrecision(16)
-	ctx.Quo(result, a.number, result)
+	result.Quo(a.number, result)
 
-	return Amount{result, a.currencyCode}, err
+	return Amount{result, a.currencyCode}, nil
 }
 
 // Round is a shortcut for RoundTo(currency.DefaultDigits, currency.RoundHalfUp).
@@ -174,16 +171,15 @@ func (a Amount) RoundTo(digits uint8, mode RoundingMode) Amount {
 	if digits == DefaultDigits {
 		digits, _ = GetDigits(a.currencyCode)
 	}
-	extModes := map[RoundingMode]string{
-		RoundHalfUp:   apd.RoundHalfUp,
-		RoundHalfDown: apd.RoundHalfDown,
-		RoundUp:       apd.RoundUp,
-		RoundDown:     apd.RoundDown,
+	extModes := map[RoundingMode]decimal.RoundingMode{
+		RoundHalfUp:   decimal.ToNearestAway,
+		RoundHalfDown: decimal.ToNearestTowardZero,
+		RoundUp:       decimal.AwayFromZero,
+		RoundDown:     decimal.ToZero,
 	}
-	result := apd.New(0, 0)
-	ctx := apd.BaseContext.WithPrecision(16)
-	ctx.Rounding = extModes[mode]
-	ctx.Quantize(result, a.number, -int32(digits))
+	result := new(decimal.Big).Copy(a.number)
+	result.Context.RoundingMode = extModes[mode]
+	result.Quantize(int(digits))
 
 	return Amount{result, a.currencyCode}
 }
@@ -211,20 +207,17 @@ func (a Amount) Equal(b Amount) bool {
 
 // IsPositive returns whether a is positive.
 func (a Amount) IsPositive() bool {
-	zero := apd.New(0, 0)
-	return a.number.Cmp(zero) == 1
+	return a.number.Sign() == 1
 }
 
 // IsNegative returns whether a is negative.
 func (a Amount) IsNegative() bool {
-	zero := apd.New(0, 0)
-	return a.number.Cmp(zero) == -1
+	return a.number.Sign() == -1
 }
 
 // IsZero returns whether a is zero.
 func (a Amount) IsZero() bool {
-	zero := apd.New(0, 0)
-	return a.number.Cmp(zero) == 0
+	return a.number.Sign() == 0
 }
 
 // MarshalBinary implements the encoding.BinaryMarshaler interface.
@@ -243,8 +236,8 @@ func (a *Amount) UnmarshalBinary(data []byte) error {
 	}
 	n := string(data[3:])
 	currencyCode := string(data[0:3])
-	number, _, err := apd.NewFromString(n)
-	if err != nil {
+	number, ok := decimal.WithContext(decimal.Context64).SetString(n)
+	if !ok || number.IsNaN(0) {
 		return InvalidNumberError{"Amount.UnmarshalBinary", n}
 	}
 	if !IsValid(currencyCode) {
@@ -277,8 +270,8 @@ func (a *Amount) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
-	number, _, err := apd.NewFromString(aux.Number)
-	if err != nil {
+	number, ok := new(decimal.Big).SetString(aux.Number)
+	if !ok || number.IsNaN(0) {
 		return InvalidNumberError{"Amount.UnmarshalJSON", aux.Number}
 	}
 	if !IsValid(aux.CurrencyCode) {
