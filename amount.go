@@ -58,21 +58,22 @@ func (e MismatchError) Error() string {
 
 // Amount stores a decimal number with its currency code.
 type Amount struct {
-	number       *apd.Decimal
+	number       apd.Decimal
 	currencyCode string
 }
 
 // NewAmount creates a new Amount from a numeric string and a currency code.
 func NewAmount(n, currencyCode string) (Amount, error) {
-	number, _, err := apd.NewFromString(n)
+	var a Amount
+	_, _, err := a.number.SetString(n)
 	if err != nil {
 		return Amount{}, InvalidNumberError{n}
 	}
 	if currencyCode == "" || !IsValid(currencyCode) {
 		return Amount{}, InvalidCurrencyCodeError{currencyCode}
 	}
-
-	return Amount{number, currencyCode}, nil
+	a.currencyCode = currencyCode
+	return a, nil
 }
 
 // NewAmountFromBigInt creates a new Amount from a big.Int and a currency code.
@@ -80,32 +81,32 @@ func NewAmountFromBigInt(n *big.Int, currencyCode string) (Amount, error) {
 	if n == nil {
 		return Amount{}, InvalidNumberError{"nil"}
 	}
+	var a Amount
 	d, ok := GetDigits(currencyCode)
 	if !ok {
 		return Amount{}, InvalidCurrencyCodeError{currencyCode}
 	}
-	coeff := new(apd.BigInt).SetMathBigInt(n)
-	number := apd.NewWithBigInt(coeff, -int32(d))
-
-	return Amount{number, currencyCode}, nil
+	var coeff apd.BigInt
+	coeff.SetMathBigInt(n)
+	a.number = *apd.NewWithBigInt(&coeff, -int32(d))
+	a.currencyCode = currencyCode
+	return a, nil
 }
 
 // NewAmountFromInt64 creates a new Amount from an int64 and a currency code.
 func NewAmountFromInt64(n int64, currencyCode string) (Amount, error) {
+	var a Amount
 	d, ok := GetDigits(currencyCode)
 	if !ok {
 		return Amount{}, InvalidCurrencyCodeError{currencyCode}
 	}
-	number := apd.New(n, -int32(d))
-
-	return Amount{number, currencyCode}, nil
+	a.number.SetFinite(n, -int32(d))
+	a.currencyCode = currencyCode
+	return a, nil
 }
 
 // Number returns the number as a numeric string.
 func (a Amount) Number() string {
-	if a.number == nil {
-		return "0"
-	}
 	return a.number.String()
 }
 
@@ -121,13 +122,14 @@ func (a Amount) String() string {
 
 // BigInt returns a in minor units, as a big.Int.
 func (a Amount) BigInt() *big.Int {
-	return a.Round().number.Coeff.MathBigInt()
+	r := a.Round()
+	return r.number.Coeff.MathBigInt()
 }
 
 // Int64 returns a in minor units, as an int64.
 // If a cannot be represented in an int64, an error is returned.
 func (a Amount) Int64() (int64, error) {
-	n := *a.Round().number
+	n := a.Round().number
 	n.Exponent = 0
 	return n.Int64()
 }
@@ -137,14 +139,16 @@ func (a Amount) Convert(currencyCode, rate string) (Amount, error) {
 	if currencyCode == "" || !IsValid(currencyCode) {
 		return Amount{}, InvalidCurrencyCodeError{currencyCode}
 	}
-	result, _, err := apd.NewFromString(rate)
+	var res Amount
+	_, _, err := res.number.SetString(rate)
 	if err != nil {
 		return Amount{}, InvalidNumberError{rate}
 	}
-	ctx := decimalContext(a.number, result)
-	ctx.Mul(result, a.number, result)
+	ctx := decimalContext(&a.number, &res.number)
+	ctx.Mul(&res.number, &a.number, &res.number)
+	res.currencyCode = currencyCode
 
-	return Amount{result, currencyCode}, nil
+	return res, nil
 }
 
 // Add adds a and b together and returns the result.
@@ -152,11 +156,12 @@ func (a Amount) Add(b Amount) (Amount, error) {
 	if a.currencyCode != b.currencyCode {
 		return Amount{}, MismatchError{a, b}
 	}
-	result := apd.New(0, 0)
-	ctx := decimalContext(a.number, b.number)
-	ctx.Add(result, a.number, b.number)
+	var res Amount
+	ctx := decimalContext(&a.number, &b.number)
+	ctx.Add(&res.number, &a.number, &b.number)
+	res.currencyCode = a.currencyCode
 
-	return Amount{result, a.currencyCode}, nil
+	return res, nil
 }
 
 // Sub subtracts b from a and returns the result.
@@ -164,35 +169,40 @@ func (a Amount) Sub(b Amount) (Amount, error) {
 	if a.currencyCode != b.currencyCode {
 		return Amount{}, MismatchError{a, b}
 	}
-	result := apd.New(0, 0)
-	ctx := decimalContext(a.number, b.number)
-	ctx.Sub(result, a.number, b.number)
+	var res Amount
+	ctx := decimalContext(&a.number, &b.number)
+	ctx.Sub(&res.number, &a.number, &b.number)
+	res.currencyCode = a.currencyCode
 
-	return Amount{result, a.currencyCode}, nil
+	return res, nil
 }
 
 // Mul multiplies a by n and returns the result.
 func (a Amount) Mul(n string) (Amount, error) {
-	result, _, err := apd.NewFromString(n)
+	var res Amount
+	_, _, err := res.number.SetString(n)
 	if err != nil {
 		return Amount{}, InvalidNumberError{n}
 	}
-	ctx := decimalContext(a.number, result)
-	ctx.Mul(result, a.number, result)
+	ctx := decimalContext(&a.number, &res.number)
+	ctx.Mul(&res.number, &a.number, &res.number)
+	res.currencyCode = a.currencyCode
 
-	return Amount{result, a.currencyCode}, err
+	return res, err
 }
 
 // Div divides a by n and returns the result.
 func (a Amount) Div(n string) (Amount, error) {
-	result, _, err := apd.NewFromString(n)
-	if err != nil || result.IsZero() {
+	var res Amount
+	_, _, err := res.number.SetString(n)
+	if err != nil || res.number.IsZero() {
 		return Amount{}, InvalidNumberError{n}
 	}
-	ctx := decimalContext(a.number, result)
-	ctx.Quo(result, a.number, result)
+	ctx := decimalContext(&a.number, &res.number)
+	ctx.Quo(&res.number, &a.number, &res.number)
+	res.currencyCode = a.currencyCode
 
-	return Amount{result, a.currencyCode}, err
+	return res, err
 }
 
 // Round is a shortcut for RoundTo(currency.DefaultDigits, currency.RoundHalfUp).
@@ -211,12 +221,13 @@ func (a Amount) RoundTo(digits uint8, mode RoundingMode) Amount {
 		RoundUp:       apd.RoundUp,
 		RoundDown:     apd.RoundDown,
 	}
-	result := apd.New(0, 0)
-	ctx := decimalContext(a.number)
+	var res Amount
+	ctx := decimalContext(&a.number)
 	ctx.Rounding = extModes[mode]
-	ctx.Quantize(result, a.number, -int32(digits))
+	ctx.Quantize(&res.number, &a.number, -int32(digits))
+	res.currencyCode = a.currencyCode
 
-	return Amount{result, a.currencyCode}
+	return res
 }
 
 // Cmp compares a and b and returns:
@@ -229,7 +240,7 @@ func (a Amount) Cmp(b Amount) (int, error) {
 	if a.currencyCode != b.currencyCode {
 		return -1, MismatchError{a, b}
 	}
-	return a.number.Cmp(b.number), nil
+	return a.number.Cmp(&b.number), nil
 }
 
 // Equal returns whether a and b are equal.
@@ -237,7 +248,7 @@ func (a Amount) Equal(b Amount) bool {
 	if a.currencyCode != b.currencyCode {
 		return false
 	}
-	return a.number.Cmp(b.number) == 0
+	return a.number.Cmp(&b.number) == 0
 }
 
 // IsPositive returns whether a is positive.
@@ -274,14 +285,13 @@ func (a *Amount) UnmarshalBinary(data []byte) error {
 	}
 	n := string(data[3:])
 	currencyCode := string(data[0:3])
-	number, _, err := apd.NewFromString(n)
+	_, _, err := a.number.SetString(n)
 	if err != nil {
 		return InvalidNumberError{n}
 	}
 	if currencyCode == "" || !IsValid(currencyCode) {
 		return InvalidCurrencyCodeError{currencyCode}
 	}
-	a.number = number
 	a.currencyCode = currencyCode
 
 	return nil
@@ -308,14 +318,13 @@ func (a *Amount) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
-	number, _, err := apd.NewFromString(aux.Number)
+	_, _, err = a.number.SetString(aux.Number)
 	if err != nil {
 		return InvalidNumberError{aux.Number}
 	}
 	if aux.CurrencyCode == "" || !IsValid(aux.CurrencyCode) {
 		return InvalidCurrencyCodeError{aux.CurrencyCode}
 	}
-	a.number = number
 	a.currencyCode = aux.CurrencyCode
 
 	return nil
@@ -341,18 +350,24 @@ func (a *Amount) Scan(src interface{}) error {
 	values := strings.Split(input, ",")
 	n := values[0]
 	currencyCode := values[1]
-	number, _, err := apd.NewFromString(n)
+	var tmp apd.Decimal
+	_, _, err := tmp.SetString(n)
 	if err != nil {
 		return InvalidNumberError{n}
 	}
 	if currencyCode == "" || !IsValid(currencyCode) {
 		return InvalidCurrencyCodeError{currencyCode}
 	}
-	a.number = number
+	a.number = tmp
 	a.currencyCode = currencyCode
 
 	return nil
 }
+
+var (
+	decimalContextPrecision39 = apd.BaseContext.WithPrecision(39)
+	decimalContextPrecision19 = apd.BaseContext.WithPrecision(19)
+)
 
 // decimalContext returns the decimal context to use for a calculation.
 func decimalContext(decimals ...*apd.Decimal) *apd.Context {
@@ -360,8 +375,8 @@ func decimalContext(decimals ...*apd.Decimal) *apd.Context {
 	// based on operand size (> int32), for increased performance.
 	for _, d := range decimals {
 		if d.Coeff.BitLen() > 31 {
-			return apd.BaseContext.WithPrecision(39)
+			return decimalContextPrecision39
 		}
 	}
-	return apd.BaseContext.WithPrecision(19)
+	return decimalContextPrecision19
 }
